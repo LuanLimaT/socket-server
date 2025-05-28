@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste Socket.IO Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            border: 1px solid #ddd;
+            padding: 20px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            margin: 5px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 3px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .status {
+            padding: 5px 10px;
+            border-radius: 3px;
+            margin: 5px 0;
+        }
+        .connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        .disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <h1>Teste Socket.IO Client</h1>
+    
+    <div class="container">
+        <h3>Status da Conexão</h3>
+        <div id="status" class="status disconnected">Desconectado</div>
+        <button onclick="connect()">Conectar</button>
+        <button onclick="disconnect()">Desconectar</button>
+    </div>
+
+    <div class="container">
+        <h3>Simular Cliente</h3>
+        <input type="text" id="clientName" placeholder="Nome do cliente" value="Cliente Teste">
+        <input type="email" id="clientEmail" placeholder="Email do cliente" value="teste@email.com">
+        <button onclick="createAtendimento()">Criar Atendimento</button>
+        
+        <div>
+            <input type="text" id="messageInput" placeholder="Digite uma mensagem">
+            <button onclick="sendMessage()">Enviar Mensagem</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <h3>Simular Mensagens de Cliente</h3>
+        <select id="atendimentoSelect">
+            <option value="">Selecione um atendimento</option>
+        </select>
+        <button onclick="simulateClientMessage()">Simular Mensagem</button>
+    </div>
+
+    <div class="container">
+        <h3>Log de Eventos</h3>
+        <button onclick="clearLog()">Limpar Log</button>
+        <div id="log" class="log"></div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        let socket = null;
+        let currentAtendimentoId = null;
+
+        function log(message) {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            logDiv.innerHTML += `<div>[${timestamp}] ${message}</div>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function updateStatus(connected) {
+            const statusDiv = document.getElementById('status');
+            if (connected) {
+                statusDiv.textContent = 'Conectado';
+                statusDiv.className = 'status connected';
+            } else {
+                statusDiv.textContent = 'Desconectado';
+                statusDiv.className = 'status disconnected';
+            }
+        }
+
+        function connect() {
+            if (socket) {
+                log('Já conectado!');
+                return;
+            }
+
+            socket = io('http://localhost:3001');
+
+            socket.on('connect', () => {
+                log('✅ Conectado ao servidor Socket.IO');
+                updateStatus(true);
+            });
+
+            socket.on('disconnect', () => {
+                log('❌ Desconectado do servidor');
+                updateStatus(false);
+            });
+
+            socket.on('atendimento:created', (data) => {
+                log(`📝 Atendimento criado: ${data.id}`);
+                currentAtendimentoId = data.id;
+                updateAtendimentoSelect();
+            });
+
+            socket.on('message:new', (message) => {
+                log(`💬 Nova mensagem: [${message.sender}] ${message.content}`);
+            });
+
+            socket.on('atendimento:accepted', (data) => {
+                log(`🎯 Atendimento aceito por: ${data.agentName}`);
+            });
+
+            socket.on('error', (error) => {
+                log(`❌ Erro: ${error.message}`);
+            });
+        }
+
+        function disconnect() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+                updateStatus(false);
+                log('🔌 Desconectado manualmente');
+            }
+        }
+
+        function createAtendimento() {
+            if (!socket) {
+                log('❌ Não conectado ao servidor');
+                return;
+            }
+
+            const clientName = document.getElementById('clientName').value;
+            const clientEmail = document.getElementById('clientEmail').value;
+
+            if (!clientName || !clientEmail) {
+                log('❌ Preencha nome e email');
+                return;
+            }
+
+            socket.emit('atendimento:create', {
+                clientName,
+                email: clientEmail,
+                source: 'test-page'
+            });
+
+            log(`📤 Solicitando criação de atendimento para ${clientName}`);
+        }
+
+        function sendMessage() {
+            if (!socket || !currentAtendimentoId) {
+                log('❌ Não conectado ou sem atendimento ativo');
+                return;
+            }
+
+            const messageInput = document.getElementById('messageInput');
+            const content = messageInput.value.trim();
+
+            if (!content) {
+                log('❌ Digite uma mensagem');
+                return;
+            }
+
+            socket.emit('message:send', {
+                atendimentoId: currentAtendimentoId,
+                content,
+                sender: 'client',
+                clientName: document.getElementById('clientName').value
+            });
+
+            log(`📤 Mensagem enviada: ${content}`);
+            messageInput.value = '';
+        }
+
+        function updateAtendimentoSelect() {
+            const select = document.getElementById('atendimentoSelect');
+            if (currentAtendimentoId) {
+                select.innerHTML = `<option value="${currentAtendimentoId}">Atendimento ${currentAtendimentoId}</option>`;
+            }
+        }
+
+        function simulateClientMessage() {
+            if (!socket) {
+                log('❌ Não conectado ao servidor');
+                return;
+            }
+
+            const select = document.getElementById('atendimentoSelect');
+            const atendimentoId = select.value;
+
+            if (!atendimentoId) {
+                log('❌ Selecione um atendimento');
+                return;
+            }
+
+            socket.emit('test:simulate-client-message', { atendimentoId });
+            log(`🧪 Solicitando simulação de mensagem para ${atendimentoId}`);
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+
+        // Conectar automaticamente ao carregar a página
+        window.onload = () => {
+            connect();
+        };
+    </script>
+</body>
+</html>
