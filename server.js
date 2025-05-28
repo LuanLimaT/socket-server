@@ -9,7 +9,7 @@ app.use(cors())
 const server = http.createServer(app)
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://localhost:3001"], // PWA e Landing Page
+    origin: ["http://localhost:3000", "http://localhost:3002"], // PWA e Landing Page
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -20,120 +20,33 @@ const atendimentos = new Map()
 // Armazenar agentes online
 const onlineAgents = new Map()
 
-// Função para criar atendimentos de teste
-function createMockAtendimentos() {
-  const mockAtendimentos = [
-    {
-      id: "atd_1",
-      clientName: "João Silva",
-      clientEmail: "joao@email.com",
-      status: "waiting",
-      unreadCount: 2,
-      startedAt: new Date(Date.now() - 300000), // 5 minutos atrás
-      messages: [
-        {
-          id: "msg_1",
-          atendimentoId: "atd_1",
-          sender: "client",
-          content: "Olá, preciso de ajuda com meu pedido",
-          timestamp: new Date(Date.now() - 120000),
-          clientName: "João Silva",
-        },
-        {
-          id: "msg_2",
-          atendimentoId: "atd_1",
-          sender: "client",
-          content: "Meu pedido não chegou ainda",
-          timestamp: new Date(Date.now() - 60000),
-          clientName: "João Silva",
-        },
-      ],
-      source: "test",
-    },
-    {
-      id: "atd_2",
-      clientName: "Maria Santos",
-      clientEmail: "maria@email.com",
-      status: "active",
-      unreadCount: 0,
-      startedAt: new Date(Date.now() - 600000), // 10 minutos atrás
-      messages: [
-        {
-          id: "msg_3",
-          atendimentoId: "atd_2",
-          sender: "client",
-          content: "Meu produto chegou com defeito",
-          timestamp: new Date(Date.now() - 180000),
-          clientName: "Maria Santos",
-        },
-        {
-          id: "msg_4",
-          atendimentoId: "atd_2",
-          sender: "agent",
-          content: "Vou verificar isso para você",
-          timestamp: new Date(Date.now() - 60000),
-        },
-      ],
-      source: "test",
-    },
-    {
-      id: "atd_3",
-      clientName: "Pedro Costa",
-      clientEmail: "pedro@email.com",
-      status: "waiting",
-      unreadCount: 1,
-      startedAt: new Date(Date.now() - 180000), // 3 minutos atrás
-      messages: [
-        {
-          id: "msg_5",
-          atendimentoId: "atd_3",
-          sender: "client",
-          content: "Quando meu produto será entregue?",
-          timestamp: new Date(Date.now() - 90000),
-          clientName: "Pedro Costa",
-        },
-      ],
-      source: "test",
-    },
-  ]
-
-  // Adicionar atendimentos ao Map
-  mockAtendimentos.forEach((atendimento) => {
-    atendimento.lastMessage = atendimento.messages[atendimento.messages.length - 1]
-    atendimentos.set(atendimento.id, atendimento)
-  })
-
-  console.log("✅ Atendimentos de teste criados:", mockAtendimentos.length)
-}
-
-// Criar atendimentos de teste na inicialização
-createMockAtendimentos()
-
-// Middleware para autenticação de agentes (opcional)
+// Middleware para identificar tipo de cliente
 io.use((socket, next) => {
   const token = socket.handshake.auth.token
   const username = socket.handshake.auth.username
 
-  // Se for um agente, validar token
+  // Se for um agente (PWA), validar token
   if (token && username) {
     socket.isAgent = true
     socket.agentId = token
     socket.username = username
+    console.log(`🔐 Agente autenticado: ${username}`)
   } else {
     socket.isAgent = false
+    console.log(`👤 Cliente conectado: ${socket.id}`)
   }
 
   next()
 })
 
 io.on("connection", (socket) => {
-  console.log(`🔌 Cliente conectado: ${socket.id} - Agente: ${socket.isAgent}`)
+  console.log(`🔌 Nova conexão: ${socket.id} - Tipo: ${socket.isAgent ? "Agente" : "Cliente"}`)
 
   // ===== EVENTOS DO CLIENTE (LANDING PAGE) =====
 
   // Cliente cria um novo atendimento
   socket.on("atendimento:create", (data) => {
-    const { clientName, email, source } = data
+    const { clientName, email, source, autoCreated } = data
 
     // Criar ID único para o atendimento
     const atendimentoId = `atd_${Date.now()}`
@@ -149,6 +62,7 @@ io.on("connection", (socket) => {
       messages: [],
       clientSocketId: socket.id,
       source,
+      autoCreated: autoCreated || false,
     }
 
     // Armazenar atendimento
@@ -161,10 +75,30 @@ io.on("connection", (socket) => {
     // Notificar cliente que o atendimento foi criado
     socket.emit("atendimento:created", { id: atendimentoId })
 
-    // Notificar todos os agentes sobre o novo atendimento
-    socket.broadcast.emit("atendimento:new", atendimento)
+    // Notificar TODOS os agentes sobre o novo atendimento
+    io.emit("atendimento:new", atendimento)
 
-    console.log(`📝 Novo atendimento criado: ${atendimentoId} por ${clientName}`)
+    console.log(`📝 Novo atendimento criado: ${atendimentoId} por ${clientName} (Auto: ${autoCreated})`)
+
+    // Se foi criado automaticamente, adicionar mensagem inicial
+    if (autoCreated) {
+      const welcomeMessage = {
+        id: `msg_${Date.now()}`,
+        atendimentoId,
+        sender: "system",
+        content: `${clientName} entrou no chat`,
+        timestamp: new Date(),
+        clientName,
+      }
+
+      atendimento.messages.push(welcomeMessage)
+      atendimento.lastMessage = welcomeMessage
+      atendimentos.set(atendimentoId, atendimento)
+
+      // Notificar agentes sobre a mensagem inicial
+      io.emit("message:new", welcomeMessage)
+      io.emit("atendimento:updated", atendimento)
+    }
   })
 
   // Cliente envia mensagem
@@ -195,6 +129,10 @@ io.on("connection", (socket) => {
     if (sender === "client") {
       atendimento.status = "waiting"
       atendimento.unreadCount += 1
+    } else if (sender === "agent") {
+      atendimento.status = "active"
+      // Reset unread count quando agente responde
+      atendimento.unreadCount = 0
     }
 
     // Atualizar atendimento
@@ -203,10 +141,10 @@ io.on("connection", (socket) => {
     // Enviar mensagem para todos na sala do atendimento
     io.to(`atendimento:${atendimentoId}`).emit("message:new", message)
 
-    // Notificar agentes sobre atualização do atendimento
+    // Notificar TODOS sobre atualização do atendimento
     io.emit("atendimento:updated", atendimento)
 
-    console.log(`💬 Nova mensagem em ${atendimentoId}: ${content}`)
+    console.log(`💬 Nova mensagem em ${atendimentoId}: [${sender}] ${content}`)
   })
 
   // ===== EVENTOS DO AGENTE (PWA) =====
@@ -266,54 +204,20 @@ io.on("connection", (socket) => {
       agentName: socket.username,
     })
 
-    // Notificar todos sobre atualização do atendimento
+    // Notificar TODOS sobre atualização do atendimento
     io.emit("atendimento:updated", atendimento)
 
     console.log(`🎯 Agente ${socket.username} entrou no atendimento ${atendimentoId}`)
   })
 
-  // ===== EVENTOS DE TESTE =====
+  // Agente está digitando
+  socket.on("agent:typing", ({ atendimentoId }) => {
+    if (!socket.isAgent) return
 
-  // Simular nova mensagem de cliente (para teste)
-  socket.on("test:simulate-client-message", ({ atendimentoId }) => {
-    const atendimento = atendimentos.get(atendimentoId)
-    if (!atendimento) return
-
-    const testMessages = [
-      "Ainda está aí?",
-      "Preciso de uma resposta urgente",
-      "Quando vocês vão resolver meu problema?",
-      "Obrigado pela atenção",
-      "Posso falar com um supervisor?",
-    ]
-
-    const randomMessage = testMessages[Math.floor(Math.random() * testMessages.length)]
-
-    const message = {
-      id: `msg_${Date.now()}`,
+    socket.to(`atendimento:${atendimentoId}`).emit("agent:typing", {
       atendimentoId,
-      sender: "client",
-      content: randomMessage,
-      timestamp: new Date(),
-      clientName: atendimento.clientName,
-    }
-
-    // Adicionar mensagem ao atendimento
-    atendimento.messages.push(message)
-    atendimento.lastMessage = message
-    atendimento.status = "waiting"
-    atendimento.unreadCount += 1
-
-    // Atualizar atendimento
-    atendimentos.set(atendimentoId, atendimento)
-
-    // Enviar mensagem para todos na sala do atendimento
-    io.to(`atendimento:${atendimentoId}`).emit("message:new", message)
-
-    // Notificar agentes sobre atualização do atendimento
-    io.emit("atendimento:updated", atendimento)
-
-    console.log(`🧪 Mensagem de teste simulada: ${randomMessage}`)
+      agentName: socket.username,
+    })
   })
 
   // Desconexão
@@ -326,7 +230,7 @@ io.on("connection", (socket) => {
       console.log(`👤 Agente ${socket.username} saiu do sistema`)
     }
 
-    // Se for um cliente com atendimento ativo, marcar atendimento como inativo
+    // Se for um cliente com atendimento ativo, marcar como desconectado
     if (!socket.isAgent && socket.atendimentoId) {
       const atendimento = atendimentos.get(socket.atendimentoId)
       if (atendimento) {
@@ -335,78 +239,46 @@ io.on("connection", (socket) => {
 
         // Notificar agentes sobre cliente desconectado
         io.emit("atendimento:updated", atendimento)
+
+        console.log(`📱 Cliente do atendimento ${socket.atendimentoId} desconectou`)
       }
     }
   })
 })
 
-// Rota simples para verificar se o servidor está rodando
+// Rota para verificar status do servidor
 app.get("/", (req, res) => {
   res.json({
     message: "Servidor Socket.IO está rodando!",
     atendimentos: atendimentos.size,
     agentesOnline: onlineAgents.size,
+    timestamp: new Date().toISOString(),
   })
 })
 
-// Rota para listar atendimentos (para debug)
+// Rota para listar atendimentos (debug)
 app.get("/atendimentos", (req, res) => {
   const atendimentosList = Array.from(atendimentos.values())
   res.json(atendimentosList)
 })
 
-// Função para simular novas mensagens periodicamente (para teste)
-function simulateClientMessages() {
-  setInterval(() => {
-    const atendimentosArray = Array.from(atendimentos.values())
-    const waitingAtendimentos = atendimentosArray.filter((a) => a.status === "waiting")
-
-    if (waitingAtendimentos.length > 0 && Math.random() > 0.7) {
-      const randomAtendimento = waitingAtendimentos[Math.floor(Math.random() * waitingAtendimentos.length)]
-
-      const testMessages = [
-        "Alguém pode me ajudar?",
-        "Ainda estou esperando uma resposta...",
-        "Por favor, preciso de ajuda urgente",
-        "Olá? Tem alguém aí?",
-      ]
-
-      const randomMessage = testMessages[Math.floor(Math.random() * testMessages.length)]
-
-      const message = {
-        id: `msg_${Date.now()}`,
-        atendimentoId: randomAtendimento.id,
-        sender: "client",
-        content: randomMessage,
-        timestamp: new Date(),
-        clientName: randomAtendimento.clientName,
-      }
-
-      // Adicionar mensagem ao atendimento
-      randomAtendimento.messages.push(message)
-      randomAtendimento.lastMessage = message
-      randomAtendimento.unreadCount += 1
-
-      // Atualizar atendimento
-      atendimentos.set(randomAtendimento.id, randomAtendimento)
-
-      // Enviar mensagem para todos na sala do atendimento
-      io.to(`atendimento:${randomAtendimento.id}`).emit("message:new", message)
-
-      // Notificar agentes sobre atualização do atendimento
-      io.emit("atendimento:updated", randomAtendimento)
-
-      console.log(`🤖 Mensagem automática simulada de ${randomAtendimento.clientName}: ${randomMessage}`)
-    }
-  }, 15000) // A cada 15 segundos
-}
-
-// Iniciar simulação de mensagens (descomente para ativar)
-// simulateClientMessages();
+// Rota para estatísticas
+app.get("/stats", (req, res) => {
+  const atendimentosList = Array.from(atendimentos.values())
+  const stats = {
+    total: atendimentosList.length,
+    waiting: atendimentosList.filter((a) => a.status === "waiting").length,
+    active: atendimentosList.filter((a) => a.status === "active").length,
+    closed: atendimentosList.filter((a) => a.status === "closed").length,
+    agentsOnline: onlineAgents.size,
+  }
+  res.json(stats)
+})
 
 const PORT = process.env.PORT || 3001
 server.listen(PORT, () => {
-  console.log(`🚀 Servidor rodando na porta ${PORT}`)
+  console.log(`🚀 Servidor Socket.IO rodando na porta ${PORT}`)
   console.log(`📊 Dashboard: http://localhost:${PORT}`)
   console.log(`📋 Atendimentos: http://localhost:${PORT}/atendimentos`)
+  console.log(`📈 Estatísticas: http://localhost:${PORT}/stats`)
 })
