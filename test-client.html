@@ -118,7 +118,11 @@
                 return;
             }
 
-            socket = io('http://localhost:3001');
+            socket = io('http://localhost:3001', {
+                transports: ['websocket'],
+                reconnectionAttempts: 5,
+                reconnectionDelay: 1000
+            });
 
             socket.on('connect', () => {
                 log('✅ Conectado ao servidor Socket.IO');

@@ -274,7 +274,7 @@ app.get("/stats", (req, res) => {
   res.json(stats)
 })
 
-const PORT = process.env.PORT || 3001
+const PORT = process.env.PORT || 3002
 server.listen(PORT, () => {
   console.log(`🚀 Servidor Socket.IO rodando na porta ${PORT}`)
   console.log(`📊 Dashboard: http://localhost:${PORT}`)
